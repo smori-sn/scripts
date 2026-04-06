@@ -54,10 +54,17 @@ while IFS=: read -r namespace name || [ -n "$namespace" ]; do
 
     echo "----------------------------------------"
     echo "Patching: $name in namespace $namespace"
-
+# Remove old annotation from pod template
+    kubectl patch rediscluster "$name" -n "$namespace" \
+        --type=json \
+        -p '[{"op":"remove","path":"/spec/template/pod/metadata/annotations/redis.smartnews.com~1redis_insights_pi_blocker"}]' \
+        2>/dev/null || true
+# Move the tag, and remove label for requires_restart
     if kubectl patch rediscluster "$name" -n "$namespace" \
         --type=merge \
-        -p "{\"spec\":{\"template\":{\"pod\":{\"metadata\":{\"annotations\":{\"redis.smartnews.com/redis_insights_pi_blocker\":\"$PI_BLOCKER_VALUE\"}}}}}}" 2>&1; then
+        -p "{\"metadata\":{\"annotations\":{\"redis.smartnews.com/redis_insights_pi_blocker\":\"$PI_BLOCKER_VALUE\"}}}" 2>&1; then
+        kubectl label rediscluster "$name" -n "$namespace" 'redis.smartnews.com/requires_restart-' 2>/dev/null || true
+
         echo "✅ Successfully patched $namespace/$name"
         ((success++))
     else
@@ -74,27 +81,3 @@ echo "Total:   $total"
 echo "Success: $success"
 echo "Failed:  $failed"
 echo ""
-
-# Verification
-if [ $success -gt 0 ]; then
-    echo "========================================"
-    echo "Verification"
-    echo "========================================"
-    while IFS=: read -r namespace name || [ -n "$namespace" ]; do
-        [[ -z "$namespace" || "$namespace" =~ ^[[:space:]]*# ]] && continue
-        namespace=$(echo "$namespace" | xargs)
-        name=$(echo "$name" | xargs)
-
-        value=$(kubectl get rediscluster "$name" -n "$namespace" \
-            -o jsonpath='{.spec.template.pod.metadata.annotations.redis\.smartnews\.com/redis_insights_pi_blocker}' 2>/dev/null || echo "ERROR")
-
-        if [ "$value" = "$PI_BLOCKER_VALUE" ]; then
-            echo "✅ $namespace/$name: $value"
-        else
-            echo "❌ $namespace/$name: $value (expected: $PI_BLOCKER_VALUE)"
-        fi
-    done < "$CLUSTERS_FILE"
-fi
-
-echo ""
-echo "Done!"
