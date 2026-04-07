@@ -65,8 +65,24 @@ while IFS=: read -r namespace name || [ -n "$namespace" ]; do
         -p "{\"metadata\":{\"annotations\":{\"redis.smartnews.com/redis_insights_pi_blocker\":\"$PI_BLOCKER_VALUE\"}}}" 2>&1; then
         kubectl label rediscluster "$name" -n "$namespace" 'redis.smartnews.com/requires_restart-' 2>/dev/null || true
 
-        echo "✅ Successfully patched $namespace/$name"
-        ((success++))
+        # jsonpath breaks on keys with both '.' and '/' — use go-template index instead
+        actual=$(kubectl get rediscluster "$name" -n "$namespace" \
+            -o go-template='{{index .metadata.annotations "redis.smartnews.com/redis_insights_pi_blocker"}}' 2>/dev/null | tr -d '\r\n' || true)
+        [[ "$actual" == '<no value>' ]] && actual=
+        restart_label=$(kubectl get rediscluster "$name" -n "$namespace" \
+            -o go-template='{{index .metadata.labels "redis.smartnews.com/requires_restart"}}' 2>/dev/null | tr -d '\r\n' || true)
+        [[ "$restart_label" == '<no value>' ]] && restart_label=
+
+        if [[ "$actual" != "$PI_BLOCKER_VALUE" ]]; then
+            echo "❌ Patch applied but annotation verification failed for $namespace/$name: expected '$PI_BLOCKER_VALUE', got '${actual:-<empty>}'"
+            ((failed++))
+        elif [[ -n "$restart_label" ]]; then
+            echo "❌ Patch applied but label removal verification failed for $namespace/$name: redis.smartnews.com/requires_restart still set to '$restart_label'"
+            ((failed++))
+        else
+            echo "✅ Successfully patched and verified $namespace/$name (annotation=$actual, requires_restart label absent)"
+            ((success++))
+        fi
     else
         echo "❌ Failed to patch $namespace/$name"
         ((failed++))
